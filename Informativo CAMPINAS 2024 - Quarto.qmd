@@ -1,0 +1,760 @@
+---
+title: "Informativo Campinas - padrão quarto"
+format: 
+  docx: 
+    reference-doc: modelo_informativo_rmc.docx
+echo: false
+warning: false
+editor: visual
+---
+
+```{r}
+# Definir mês e ano do informativo
+mes_num <- 08
+mes_nom <- "agosto"
+
+ano_atual <- 2024
+ano_inic <- 2014
+ano_ant <- 2023
+ano_ant2 <- 2022
+
+# Carregar pacotes do R
+library(tidyverse)
+library(knitr)
+library(flextable)
+library(shiny)
+library(scales)
+library(formattable)
+library(curl)
+library(RCurl)
+library(httr)
+library(lubridate)
+
+options(OutDec = ",")
+
+setwd("C:/Users/malve/Documents/Observatório PUC Camp/Informativos/Informativos Campinas")
+```
+
+```{r}
+#### Organização - Dados Exportacao e Importacao, GitHub #####
+# Importando os dados do repositório de informativos
+
+# EXP
+file_name_exp <- "EXP_MUN_COMPLETA_SP.RData"
+url_exp <- "https://github.com/Observatorio-Informativos/Bancos-de-dados/raw/main/EXP_MUN_COMPLETA_SP.RData"
+ 
+if (!file.exists(file_name_exp)) {
+  # Se o arquivo não estiver salvo, baixá-lo
+  # Se estiver trabalhando com dados novos pela primeira vez, certifique-se de excluir o arquivo antigo, para que os dados novos sejam salvos no computador
+  download.file(url_exp, file_name_exp, timeout = 1000)
+} else {
+  load(file_name_exp)
+}
+
+exp_up <- exp_up %>%
+  filter(CO_ANO >= ano_inic) %>%
+  mutate(VL_FOB=as.numeric(VL_FOB)) %>%
+  mutate(SH4 = as.factor(SH4)) %>%
+  mutate(SH4 = str_sub(paste0(0,SH4),-4)) %>%
+  mutate(CO_PORTO = NULL) %>%
+  rename(VL_FOB_EXP = VL_FOB) # separando anos necessarios
+
+# IMP
+file_name_imp <- "IMP_MUN_COMPLETA_SP.RData"
+url_imp <- "https://github.com/Observatorio-Informativos/Bancos-de-dados/raw/main/IMP_MUN_COMPLETA_SP.RData"
+
+if (!file.exists(file_name_imp)) {
+  # Se o arquivo não estiver salvo, baixá-lo
+  download.file(url_imp, file_name_imp, timeout = 1000)
+} else {
+  load(file_name_imp)
+}
+
+imp_up <- imp_up %>%
+  filter(CO_ANO >= ano_inic) %>% # separando anos necessarios
+  mutate(VL_FOB = as.numeric(VL_FOB)) %>%
+  mutate(SH4 = as.factor(SH4)) %>%
+  mutate(SH4 = str_sub(paste0(0,SH4),-4)) %>%
+  mutate(CO_PORTO = NULL) %>%
+  rename(VL_FOB_IMP = VL_FOB) # separando anos necessarios
+
+#### Organizacao - Expancao Dados PCI, GitHub ####
+# Expandindo PCI 2019 para 2020, 2022, 2023. PCI são os dados de complexidade dos produtos
+pci_db <- readr::read_csv("https://github.com/Observatorio-Informativos/Bancos-de-dados/blob/main/pci_hs07_rankings.csv?raw=true", locale = locale(encoding = "UTF-8")) %>%
+  filter(CO_ANO == 2019) %>%
+  rbind( 
+    mutate(.,CO_ANO=2020),
+    mutate(.,CO_ANO=2022), 
+    mutate(.,CO_ANO=2023), 
+    mutate(.,CO_ANO=2024)) %>%
+  filter(CO_ANO > 2019) %>%
+  bind_rows(readr::read_csv("https://github.com/Observatorio-Informativos/Bancos-de-dados/blob/main/pci_hs07_rankings.csv?raw=true", locale = locale(encoding = "UTF-8"))) %>%
+  mutate(HS4.ID = as.factor(HS4.ID)) %>%
+  group_by(CO_ANO) %>%
+  mutate(`Grau de Complexidade`=case_when(
+    pci <= min(pci,na.rm = T)+((max(pci,na.rm = T)-min(pci, na.rm = T))/4) ~ "Baixa", 
+    pci >min(pci,na.rm = T)+((max(pci,na.rm = T)-min(pci, na.rm = T))/4) & 
+      pci<= min(pci, na.rm = T)+((max(pci,na.rm = T)-min(pci,na.rm = T))/4)*2 ~ "Média-baixa",
+    pci >min(pci,na.rm = T)+((max(pci,na.rm = T)-min(pci, na.rm = T))/4) *2 & 
+      pci<= min(pci, na.rm = T)+((max(pci,na.rm = T)-min(pci,na.rm = T))/4)*3 ~ "Média-alta",
+    pci >min(pci,na.rm = T)+((max(pci,na.rm = T)-min(pci, na.rm = T))/4) *3 ~ "Alta")) %>%
+  ungroup() %>%
+  select(SH4_N=HS4, SH4=HS4.ID, CO_ANO,`Grau de Complexidade`)
+  
+#### Organizacao - Dados CO_PAIS, GitHub ####
+# Dados CO_PAIS 
+co_pais <- readr::read_csv("https://raw.githubusercontent.com/Observatorio-Informativos/Bancos-de-dados/main/co_pais_mdic_.csv", locale = locale(encoding = "UTF-8"))[,c(1,4)] %>%
+  rename("CO_PAIS"=1)%>%
+  mutate(CO_PAIS=as.numeric(as.character(CO_PAIS)))
+
+#### Organizacao - Arrumando Bancos de Dados #### 
+#### SP trade
+# 1. Balanca de Campinas - desagregado por produto, municipio, ano, mes, destinos e origens
+sp_exp <- exp_up %>% filter(SG_UF_MUN == "SP") 
+sp_imp <- imp_up %>% filter(SG_UF_MUN == "SP")  
+
+sp_trade <- sp_exp %>%
+  full_join(sp_imp) %>%
+  mutate(Mes = case_when(CO_MES ==1 ~ "JAN",
+                         CO_MES ==2 ~ "FEV",
+                         CO_MES ==3 ~ "MAR",
+                         CO_MES ==4 ~ "ABR",
+                         CO_MES ==5 ~ "MAI",
+                         CO_MES ==6 ~ "JUN",
+                         CO_MES ==7 ~ "JUL",
+                         CO_MES ==8 ~ "AGO",
+                         CO_MES ==9 ~ "SET",
+                         CO_MES ==10 ~ "OUT",
+                         CO_MES ==11 ~ "NOV",
+                         CO_MES ==12 ~ "DEZ"), 
+         `Mês/Ano` = paste0(Mes, "/", substring(CO_ANO, 3, 4))) # Mes e Ano organizado para remover datas manuais
+
+# Importante: A soma das exportaçoes dos estados brasileiros nao batem com o comex vis. 
+# Porem, soma das importacoes bate! O total do Brasil bate para ex e imp. Possivelmente
+# o erro estao no codigo que gera as exportacoes do comex-vis! O resultado tambem bate com 
+# os calculos do SEADE. 
+
+#### Filtrando para Campinas
+sp_trade <- sp_trade %>% 
+  mutate(Campinas = ifelse(CO_MUN == 3409502, 1,0)) # Marcador para Campinas em sp trade 
+
+# Aqui o códgio IBGE para municípios de SP inicia-se com 34, porém essa é a numeração antiga, atualmente o código de SP é 35, no entanto, o COMEX STATS continua utilizando o código 34
+```
+
+```{r}
+tb1<- sp_trade %>%
+  filter(CO_MES==mes_num) %>%
+  group_by(CO_ANO, Campinas, `Mês/Ano`) %>%
+  summarise_at(c("VL_FOB_EXP","VL_FOB_IMP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              id_cols = c(CO_ANO, `Mês/Ano`), 
+              names_from = Campinas, 
+              values_from = c("VL_FOB_EXP", "VL_FOB_IMP")) %>%
+  ungroup()%>%
+  # mutate(mes=mes_n)%>% # Datas manuais não utilizadas
+  # mutate(ano=substr(CO_ANO,3,4)) %>% # Datas manuais não utilizadas
+  # mutate(Periodo=paste0(mes,sep="/",ano))%>% # Datas manuais não utilizadas
+  mutate("Valor Exp."= round(VL_FOB_EXP_1/1000000,2)) %>%
+  mutate("% Exp. SP"= round(VL_FOB_EXP_1/(VL_FOB_EXP_1+VL_FOB_EXP_0),4)) %>%
+  mutate("Valor Imp."=round(VL_FOB_IMP_1/1000000,2)) %>%
+  mutate("% Imp. SP"=round(VL_FOB_IMP_1/(VL_FOB_IMP_1+VL_FOB_IMP_0),4)) %>%
+  mutate("Saldo Campinas"=round((VL_FOB_EXP_1-VL_FOB_IMP_1)/1000000,2)) %>%
+  mutate("Saldo SP"=round(((VL_FOB_EXP_0+VL_FOB_EXP_1)-
+                             (VL_FOB_IMP_0+VL_FOB_IMP_1))/1000000,2)) %>%
+  select(`Mês/Ano`, 7:12) 
+
+tb1$`% Exp. SP` = tb1$`% Exp. SP`*100
+tb1$`% Exp. SP` = paste0(tb1$`% Exp. SP`, '%')
+
+tb1$`% Imp. SP` = tb1$`% Imp. SP`*100
+tb1$`% Imp. SP` = paste0(tb1$`% Imp. SP`, '%')
+
+CresCompAnoAnteriorIMP <- round(((tb1[11, 4]- tb1[10, 4])/tb1[10,4])*100, digits = 2)
+CresCompAnoAnteriorEXP <- round(((tb1[11, 2]- tb1[10, 2])/tb1[10,2])*100, digits = 2)
+CresCompAnoAnteriorSaldoBCom <- round(((tb1[11, 6]- tb1[10, 6])/tb1[10,6])*100, digits = 2)
+PartImpEstadoSP <- tb1[11, 5]
+PartExpEstadoSP <- tb1[11, 3]
+#PrincipalRespPeloAumenEXP1 <- 
+#Top3produtosEXP <- tb5["2:3", 3]
+
+```
+
+```{r}
+tb4a<- sp_trade %>%
+  filter(CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num)  %>%
+  group_by(Campinas, CO_MES, `Mês/Ano`, CO_ANO) %>%
+  summarise_at(c("VL_FOB_EXP","VL_FOB_IMP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              id_cols = c(CO_MES,CO_ANO, `Mês/Ano`), 
+              names_from = Campinas, 
+              values_from = c("VL_FOB_EXP", "VL_FOB_IMP")) %>%
+  arrange(CO_ANO,CO_MES) %>%
+  select(-CO_ANO) %>%
+  ungroup() 
+
+tb4a <- tb4a %>%
+  mutate("Valor das Exp."= round(VL_FOB_EXP_1/1000000,2)) %>%
+  mutate("% EXP Campinas/SP"= round(VL_FOB_EXP_1/(VL_FOB_EXP_1+VL_FOB_EXP_0),4)) %>%
+  mutate("Valor das Imp."=round(VL_FOB_IMP_1/1000000,2)) %>%
+  mutate("% IMP Campinas/SP"=round(VL_FOB_IMP_1/(VL_FOB_IMP_1+VL_FOB_IMP_0),4)) %>%
+  mutate("Saldo Campinas"=round((VL_FOB_EXP_1-VL_FOB_IMP_1)/1000000,2)) %>%
+  mutate("Saldo SP"=round(((VL_FOB_EXP_0+VL_FOB_EXP_1)-
+                             (VL_FOB_IMP_0+VL_FOB_IMP_1))/1000000,2)) %>%
+select(`Mês/Ano`, 7:12)
+
+tb4b<- sp_trade %>%
+  filter(CO_ANO==ano_atual-2 & CO_MES > mes_num | 
+           CO_ANO==ano_atual-1 & CO_MES <= mes_num)  %>%
+  group_by(Campinas, CO_MES, `Mês/Ano`, CO_ANO) %>%
+  summarise_at(c("VL_FOB_EXP","VL_FOB_IMP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              id_cols = c(CO_MES, `Mês/Ano`), 
+              names_from = Campinas, 
+              values_from = c("VL_FOB_EXP", "VL_FOB_IMP")) %>%
+  ungroup()
+
+tb4b <- tb4b %>%
+  mutate("Valor das Exp."= round(VL_FOB_EXP_1/1000000,2)) %>%
+  mutate("% EXP Campinas/SP"= round(VL_FOB_EXP_1/(VL_FOB_EXP_1+VL_FOB_EXP_0),4)) %>%
+  mutate("Valor das Imp."=round(VL_FOB_IMP_1/1000000,2)) %>%
+  mutate("% IMP Campinas/SP"=round(VL_FOB_IMP_1/(VL_FOB_IMP_1+VL_FOB_IMP_0),4)) %>%
+  mutate("Saldo Campinas"=round((VL_FOB_EXP_1-VL_FOB_IMP_1)/1000000,2)) %>%
+  mutate("Saldo SP"=round(((VL_FOB_EXP_0+VL_FOB_EXP_1)-
+                             (VL_FOB_IMP_0+VL_FOB_IMP_1))/1000000,2)) %>%
+select(`Mês/Ano`, 7:12)
+
+CresCompAnoAnteriorEXP12meses <- round((sum(tb4a[, 2]) - sum(tb4b[,2]))/sum(tb4b[,2]) *100,2)
+
+CresCompAnoAnteriorIMP12meses <- round((sum(tb4a[, 4]) - sum(tb4b[,4]))/sum(tb4b[,4]) *100,2)
+
+CresCompAnoAnteriorSaldoBCom12meses <- round((sum(tb4a[, 6]) - sum(tb4b[,6]))/sum(tb4b[,6]) *100,2)
+```
+
+**Informativo Mensal**
+
+\# Atividade Econômica e Emprego no Município de Campinas
+
+**Volume 2 \| N. `r mes_nom` \| `r format(Sys.time(), '%Y')`**
+
+**Responsável:**
+
+Prof. Dr. Paulo Ricardo da Silva Oliveira
+
+Profa. Dra. Eliane Navarro Rosandiski
+
+**Assistentes técnicos:**
+
+João Lucas Alves da Silva
+
+Matheus Augusto de Souza Alexandre
+
+## Sumário Executivo
+
+Este informativo apresenta e discute os principais dados da balança comercial de Campinas para o mês `r format(Sys.time()-2.628e+6, '%m/%Y')`. Os dados utilizados nas análises são da base do Ministério do Desenvolvimento, Indústria, Comércio e Serviços. Esses dados são atribuídos ao município quando a empresa responsável pela exportação e/ou importação tem sede em Campinas-SP. Além dos dados quantitativos, agregados e desagregados por município, apresenta-se a qualificação da pauta de exportação e importação de Campinas-SP a partir de cruzamentos dos dados de comércio com os Índices de Complexidade de Produtos (PCI), calculados pelo Observatório de Complexidade Econômica do MIT Media Lab. O informativo é encerrado com algumas previsões e perspectivas.
+
+Dentre as informações analisadas, destacam-se:
+
+Em `r format(Sys.time()-2.628e+6, '%m/%Y')`:
+
+1.  `r ifelse(CresCompAnoAnteriorEXP >0, "Aumento","Diminuição")` de `r CresCompAnoAnteriorEXP`% nas exportações e `r ifelse(CresCompAnoAnteriorIMP >0, "aumento","diminuição")` de `r CresCompAnoAnteriorIMP`% nas importações de Campinas-SP, resultando em `r ifelse(CresCompAnoAnteriorSaldoBCom >0, "alta","queda")` de `r CresCompAnoAnteriorSaldoBCom`% no déficit comercial municipal;
+
+2.  As participações nas importações e exportações do estado de São Paulo (SP) foram de `r PartImpEstadoSP` e `r PartExpEstadoSP`, respectivamente, (...);
+
+Em 12 meses:
+
+1.  `r ifelse(CresCompAnoAnteriorEXP12meses >0, "Aumento","Diminuição")` de `r CresCompAnoAnteriorEXP12meses`% nas exportações e `r ifelse(CresCompAnoAnteriorIMP12meses >0, "aumento","diminuição")` de `r CresCompAnoAnteriorIMP12meses`% nas importações de Campinas, resultando em `r ifelse(CresCompAnoAnteriorSaldoBCom12meses >0, "alta","queda")` de `r CresCompAnoAnteriorSaldoBCom12meses`% no déficit comercial municipal;
+
+2.  Destaca-se o crescimento do valor das exportações de (...), (...) e (...);
+
+3.  Destaca-se o crescimento do valor importado de (...), (...) e (...);
+
+4.  Houve aumento relativo das exportações para praticamente todos os principais destinos, com destaque para (...);
+
+5.  Houve aumento relativo das importações de praticamente todas as principais origens, com destaque para (...).
+
+Em suma, para além dos problemas estruturais do déficit comercial municipal causados pela dependência das importações de insumos externos, as exportações mostram `r ifelse(CresCompAnoAnteriorEXP >0, "melhora","piora")` da atividade do setor externo de Campinas, em `r format(Sys.time()-2.628e+6, '%m/%Y')`, em relação ao mesmo período do ano anterior. Para as estatísticas de 12 meses, (....), verifica-se (...) do setor externo, com base no valor exportado.
+
+É importante ressaltar que as estatísticas de volume de comércio, baseadas em valores monetários, podem sofrer efeitos inflacionários importantes no período.
+
+### Balança Comercial `r format(Sys.time()-2.628e+6, '%m/%Y')`
+
+A Tabela 1 traz os dados da balança comercial de Campinas-SP para os meses de `r mes_nom` entre `r format(Sys.time() -10*12*2.628e+6, '%Y')` e `r format(Sys.time(), '%Y')`.
+
+```{r}
+set_flextable_defaults(
+  font.size = 11, font.family = "Aptos", theme_fun = theme_zebra,
+  padding = 6,
+  width = 1,
+  text.align = "left",
+  decimal.mark = ",",
+  big.mark = ".")
+
+tb1 %>% 
+  flextable() %>% 
+  add_header_lines(paste("Tabela 1 - Balança Comercial de Campinas para os meses de",  mes_nom, "(valores em milhões de USD/FOB).")) %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Observatório de Complexidade Econômica e do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+O mês de (...) é tradicionalmente um mês de (...) volatilidade nos valores históricos das exportações, e (...) nível dos valores importados.
+
+A partir dos dados da Tabela 1, é possível verificar que as exportações de `r format(Sys.time()-2.628e+6, '%m/%Y')` foram de `r tb1[11, 2]` milhões de dólares, apresentando um `r ifelse(CresCompAnoAnteriorEXP >0, "crescimento","decrescimento")` de `r CresCompAnoAnteriorEXP`% em relação ao mesmo período de `r format(Sys.time()-12*2.628e+6, '%Y')`. Esse valor corresponde (...) para o mês em 10 anos. Além disso, a participação nas exportações do estado de São Paulo foi de `r tb1[11, 3]`, indicando que Campinas (...) quando comparado com o mesmo período em `r format(Sys.time()-12*2.628e+6, '%Y')`, embora essa participação figure entre (...) da história.
+
+As importações totalizaram `r tb1[11,4]` `r ifelse(tb1[11,4]>2.0,"milhões","milhão")` de dólares, no mesmo período, representando um `r ifelse(CresCompAnoAnteriorIMP >0, "crescimento","decrescimento")` de `r CresCompAnoAnteriorIMP`% em comparação a `r format(Sys.time()-13*2.628e+6, '%m/%Y')`. A participação de Campinas nas importações do estado foi de `r tb1[11,5]`, (...), porém, essa participação também figura (...) da série histórica. O saldo negativo da balança comercial, `r tb1[11,6]` `r ifelse(tb1[11,4]>2.0,"milhões","milhão")` de dólares, sofreu `r ifelse(CresCompAnoAnteriorSaldoBCom>0,"aumento","queda")` de `r CresCompAnoAnteriorSaldoBCom`% em relação ao mesmo período do ano anterior.
+
+```{r}
+tb5<- sp_trade %>%
+  filter(CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num |
+           CO_ANO==ano_atual-2 & CO_MES > mes_num | 
+           CO_ANO==ano_atual-1 & CO_MES <= mes_num,
+         Campinas == 1)  %>%
+  mutate(Periodo = case_when(CO_ANO==ano_atual-1 & CO_MES > mes_num | CO_ANO==ano_atual & CO_MES <= mes_num ~ "23/22",
+                             CO_ANO == ano_atual-2 & CO_MES > mes_num | CO_ANO == ano_atual-1 & CO_MES <= mes_num ~ "22/20")) %>%
+left_join(pci_db) %>%
+  group_by(SH4, SH4_N, `Grau de Complexidade`, Periodo) %>%
+  summarise_at(c("VL_FOB_EXP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              names_from = Periodo, 
+              values_from = c("VL_FOB_EXP")) %>%
+  ungroup() %>%
+  mutate( NCM=SH4,
+          Produto=SH4_N,
+          `Valor Exp. 23`=round(`23/22`/1000000,2),
+          `Var. % 22/23`= round((`23/22`- `22/20`)/`22/20`,4)) %>%
+  select(NCM,Produto, 
+         `Valor Exp. 23`,`Var. % 22/23`,
+         `Grau de Complexidade`) 
+
+tb5_new <- tb5[order(tb5$`Valor Exp. 23`, decreasing = TRUE), ]
+
+# Adicionando porcentagens
+tb5_new$`Var. % 22/23` = tb5_new$`Var. % 22/23`*100
+tb5_new$`Var. % 22/23` = paste0(tb5_new$`Var. % 22/23`, '%')
+#view(tb5_new)
+
+
+#view(tb5_new[1:10, ])
+#tb_new[1:10]
+tb5_new <- tb5_new[1:10, ]
+
+```
+
+```{r}
+# Tabela 6 - Principais produtos Exportados, Acumulado ano_atual
+tb6<- sp_trade %>%
+  filter(CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num |
+           CO_ANO==ano_atual-2 & CO_MES > mes_num | 
+           CO_ANO==ano_atual-1 & CO_MES <= mes_num,
+         Campinas == 1)  %>%
+  mutate(Periodo = case_when(CO_ANO==ano_atual-1 & CO_MES > mes_num | CO_ANO==ano_atual & CO_MES <= mes_num ~ "23/22",
+                             CO_ANO == ano_atual-2 & CO_MES > mes_num | CO_ANO == ano_atual-1 & CO_MES <= mes_num ~ "22/20")) %>%
+  left_join(pci_db) %>%
+  group_by(SH4, SH4_N, `Grau de Complexidade`, Periodo) %>%
+  summarise_at(c("VL_FOB_IMP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              names_from = Periodo, 
+              values_from = c(`VL_FOB_IMP`)) %>%
+  ungroup() %>%
+  mutate( NCM=SH4,
+          Produto=SH4_N,
+          `Valor Imp. 23`=round(`23/22`/1000000,2),
+          `Var. % 22/23`= round((`23/22`- `22/20`)/`22/20`,4)) %>%
+  select(NCM,Produto, 
+         `Valor Imp. 23`,`Var. % 22/23`,
+         `Grau de Complexidade`)
+
+tb6_new <- tb6[order(tb6$`Valor Imp. 23`, decreasing = TRUE), ]
+#view(tb6_new[1:10, ])
+#tb6_new[1:10, ]
+
+# Adicionando %
+
+tb6_new$`Var. % 22/23` = tb6_new$`Var. % 22/23`*100
+tb6_new$`Var. % 22/23` = paste0(tb6_new$`Var. % 22/23`, '%')
+#view(tb6_new[1:10, ])
+#tb6_new[1:10, ]
+
+
+
+tb6_new <- tb6_new[1:10, ]
+```
+
+Os principais produtos responsáveis `r ifelse(CresCompAnoAnteriorEXP >0, "pelo aumento","pela redução")` do valor exportado foram (...) (var.), (...) (var.) e (...) (var.). Dentre as `r ifelse(CresCompAnoAnteriorEXP >0, " quedas","altas")`, destaca-se (...)
+
+Nas importações, as principais `r ifelse(CresCompAnoAnteriorIMP >0, "altas","quedas")` deram-se para (...) (var.), (...) (var.) e (...) (var.). Destaca-se, porém, `r ifelse(CresCompAnoAnteriorIMP >0, "queda","alta")` no valor importado de (...) (var.).
+
+A Tabela 2 mostra as exportações de Campinas-SP para `r format(Sys.time()-2.628e+6, '%m/%Y')`, agregadas de acordo com o grau de complexidade dos produtos. Produtos considerados mais complexos são produzidos em países e localidades com maior grau de sofisticação tecnológica das estruturas produtivas, portanto, com maiores níveis de produtividade e renda.
+
+```{r}
+tb2 <- sp_trade %>%
+  filter(CO_MES == mes_num, Campinas == 1, CO_ANO >= ano_atual -1) %>%
+  left_join(pci_db)  %>%
+  mutate(`Grau de Complexidade`=replace_na(`Grau de Complexidade`,"IN")) %>%
+  group_by(`Grau de Complexidade`, CO_ANO) %>%
+  summarise("Valor das Exp."=sum(VL_FOB_EXP,na.rm=T)) %>%
+  pivot_wider(., 
+              id_cols = `Grau de Complexidade`, 
+              names_from = CO_ANO, 
+              values_from = c(`Valor das Exp.`)) %>%
+  ungroup() %>%
+  mutate(`Valor das Exp. 23` = round(`2023`/1000000,2)) %>%
+  mutate(`% do Total 23` = round(`2023`/sum(`2023`),4)) %>%
+  mutate(`Valor das Exp. 24` =round(`2024`/1000000,2)) %>%
+  mutate(`% do Total 24` =round(`2024`/sum(`2024`),4)) %>%
+  mutate(`Var. % 23/24`=round((`Valor das Exp. 24`-`Valor das Exp. 23`)/
+                                `Valor das Exp. 23`,4)) %>%
+  select(-`2023`,-`2024`)
+```
+
+```{r}
+tb2 <- tb2[-c(3), ]
+
+tb2 <- tb2[c(2,4,3,1), ]
+
+# Adicionando %
+tb2$`Var. % 23/24` = tb2$`Var. % 23/24`*100
+tb2$`Var. % 23/24` = paste0(tb2$`Var. % 23/24`, '%')
+
+tb2$`% do Total 23` = tb2$`% do Total 23`*100
+tb2$`% do Total 23` = paste0(tb2$`% do Total 23`, '%')
+
+tb2$`% do Total 24` = tb2$`% do Total 24`*100
+tb2$`% do Total 24` = paste0(tb2$`% do Total 24`, '%')
+
+tb2 <- tb2 %>%
+  rbind(c("Total", sum(tb2[2:4 , 2]), "", sum(tb2[2:4 , 4]), 
+          "", "", ""))
+
+tb2 %>% 
+  flextable() %>% 
+  add_header_lines(paste("Tabela 2 - Exportações Municipais por Grau de Complexidade Econômica -" , format(Sys.time()-2.628e+6, '%m/%Y'), "(valores em milhões de USD/FOB).")) %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Observatório de Complexidade Econômica e do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+Houve (...) das exportações em diferentes categorias de complexidade. A de baixa complexidade, teve `r ifelse(tb2[1, 6]>0,"aumento","queda")` de `r tb2[1, 6]`; a média-baixa complexidade teve `r ifelse(tb2[2,6] > 0,"aumento","queda")` de `r tb2[2, 6]`; média-alta complexidade teve `r ifelse(tb2[3,6]>0,"aumento","queda")` de `r tb2[3, 6]`; e a de alta complexidade teve `r ifelse(tb2[4,6]>0,"aumento","queda")` de `r tb2[4, 6]`. Contudo, mais de (...) das exportações do município se concentraram em produtos de média-alta e alta complexidade.
+
+```{r}
+tb3 <- sp_trade %>%
+  filter(CO_MES==mes_num, Campinas==1, CO_ANO>=ano_atual-1) %>%
+  left_join(pci_db)  %>%
+  mutate(`Grau de Complexidade`=replace_na(`Grau de Complexidade`,"IN")) %>%
+  group_by(`Grau de Complexidade`, CO_ANO) %>%
+  summarise("Valor das Imp."=sum(VL_FOB_IMP,na.rm=T)) %>%
+  pivot_wider(., 
+              id_cols = `Grau de Complexidade`, 
+              names_from = CO_ANO, 
+              values_from = c(`Valor das Imp.`)) %>%
+  ungroup() %>%
+  mutate("Valor das Imp. 23"= round(`2023`/1000000,2)) %>%
+  mutate("% do Total 23"= round(`2023`/sum(`2023`),4)) %>%
+  mutate("Valor das Imp. 24"=round(`2024`/1000000,2)) %>%
+  mutate("% do Total 24"=round(`2024`/sum(`2024`),4)) %>%
+  mutate("Var. % 23/24"=round((`Valor das Imp. 24`-`Valor das Imp. 23`)/
+                                `Valor das Imp. 23`,4)) %>%
+  select(-`2023`,-`2024`)
+
+
+```
+
+A Tabela 3 mostra as importações de Campinas-SP em `r format(Sys.time()-2.628e+6, '%m/%Y')`, agregadas de acordo com o grau de complexidade econômica dos produtos importados.
+
+```{r}
+
+tb3 <- tb3[-c(3), ]
+tb3 <- tb3[c(2,4,3,1), ]
+
+# Adicionando %
+tb3$`Var. % 23/24` = tb3$`Var. % 23/24`*100
+tb3$`Var. % 23/24` = paste0(tb3$`Var. % 23/24`, '%')
+#view(tb3)
+
+tb3$`% do Total 23` = tb3$`% do Total 23`*100
+tb3$`% do Total 23` = paste0(tb3$`% do Total 23`, '%')
+#view(tb3)
+
+tb3$`% do Total 24` = tb3$`% do Total 24`*100
+tb3$`% do Total 24` = paste0(tb3$`% do Total 24`, '%')
+#view(tb3)
+
+tb3 <- tb3 %>%
+  rbind(c("Total", sum(tb3[2:4 , 2]), "", sum(tb3[2:4 , 4]), 
+          "", "", ""))
+
+tb3 %>% 
+  flextable() %>% 
+  add_header_lines(paste("Tabela 3 - Importações Municipais por Grau de Complexidade Econômica -" , format(Sys.time()-2.628e+6, '%m/%Y'), "(valores em milhões de USD/FOB).")) %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Observatório de Complexidade Econômica e do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+Houve (...) dos valores importados em diferentes categorias de complexidade. A categoria de baixa complexidade apresentou `r ifelse(tb3[1,6]>0,"crescimento","decrescimento")` de `r tb3[1, 6]`; a de média-baixa, `r ifelse(tb3[2,6]>0,"crescimento","decrescimento")` de `r tb3[2, 6]`; a de média-alta, `r ifelse(tb3[3,6]>0,"crescimento","decrescimento")` de `r tb3[3, 6]`; e a de alta apresentou `r ifelse(tb3[4,6]>0,"crescimento","queda")` de `r tb3[4, 6]`. As importações de bens de média-alta e alta complexidade representaram mais de (...) do valor de todos os produtos importados
+
+# Balança Comercial 12 meses
+
+A Tabela 4 traz os dados da balança comercial de Campinas para os últimos 12 meses.
+
+```{r}
+
+# Adicionado %
+tb4a$`% EXP Campinas/SP` = tb4a$`% EXP Campinas/SP`*100
+tb4a$`% EXP Campinas/SP` = paste0(tb4a$`% EXP Campinas/SP`, '%')
+#view(tb4)
+
+tb4a$`% IMP Campinas/SP` = tb4a$`% IMP Campinas/SP`*100
+tb4a$`% IMP Campinas/SP` = paste0(tb4a$`% IMP Campinas/SP`, '%')
+#view(tb4)
+
+tb4a <- tb4a %>%
+  rbind(c("Total", sum(tb4a[1:12 , 2]), "", sum(tb4a[1:12 , 4]),
+          " ", sum(tb4a[1:12, 6]), sum(tb4a[1:12, 7])))
+
+tb4a %>% 
+  flextable() %>% 
+  add_header_lines(paste("Tabela 4 - Balança Comercial Municipal 12 meses", "(valores em milhões de USD/FOB).")) %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+As importações atingiram a marca dos `r tb4a[13, 4]` milhões de dólares, enquanto as exportações somaram `r tb4a[13, 2]` milhões. O desequilíbrio entre importações e exportações rendeu um déficit comercial municipal de `r tb4a[13, 6]` milhões de dólares -- o saldo estadual foi de `r tb4a[13, 7]` milhões no mesmo período.
+
+```{r}
+
+tb5_new %>% 
+  flextable() %>% 
+  add_header_lines("Tabela 5 - Principais produtos exportados por Campinas em 12 meses (valores em milhões de USD/FOB).") %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Observatório de Complexidade Econômica e do Ministério de Indústria, Comércio, Serviços e Inovação.")
+
+tb5_drop_na <- tb5 %>%
+  drop_na(`Valor Exp. 23`)
+
+labelporcentagem_tb5 <- ((sum(tb5_new$`Valor Exp. 23`)*100) / (sum(tb5_drop_na$`Valor Exp. 23`)))
+labelporcentagem_tb5 <- round(labelporcentagem_tb5, digits = 2)
+
+```
+
+A Tabela 5 traz o valor exportado dos principais produtos da pauta municipal, em 12 meses, bem como a variação em relação aos 12 meses anteriores. Esses produtos totalizam aproximadamente `r labelporcentagem_tb5`% das exportações totais no período. Nota-se que (...).
+
+A Tabela 6 traz o valor importado dos principais produtos da pauta municipal, em 12 meses, bem como a variação em relação ao mesmo período do ano anterior.
+
+```{r}
+
+tb6_new %>% 
+  flextable() %>% 
+  add_header_lines("Tabela 6 - Principais produtos importados por Campinas em 12 meses (valores em milhões de USD/FOB).") %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Observatório de Complexidade Econômica e do Ministério de Indústria, Comércio, Serviços e Inovação.")
+
+tb6_drop_na <- tb6 %>%
+  drop_na(`Valor Imp. 23`)
+
+labelporcentagem_tb6 <- ((sum(tb6_new$`Valor Imp. 23`)*100) / (sum(tb6_drop_na$`Valor Imp. 23`)))
+labelporcentagem_tb6 <- round(labelporcentagem_tb6, digits = 2)
+
+```
+
+Os produtos listados na Tabela 6 totalizam aproximadamente `r labelporcentagem_tb6`% das importações realizadas por Campinas no período. Houve aumento nas importações em quase todos os produtos, com exceção de (...)
+
+Assumindo que as importações estão relacionadas às atividades econômicas das cadeias à frente dos produtos considerados, há indícios de (...). É importante ressaltar que nesse período pode ter havido algum aumento de preços dos insumos importados, podendo elevar o valor das importações também pelo efeito preço.
+
+A Tabela 7 traz as exportações para os 10 principais destinos de Campinas, em 12 meses, bem como a variação das exportações por destino em relação aos 12 meses anteriores.
+
+```{r}
+tb7<- sp_trade %>%
+  filter(CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num |
+           CO_ANO==ano_atual-2 & CO_MES > mes_num | 
+           CO_ANO==ano_atual-1 & CO_MES <= mes_num,
+         Campinas == 1)%>%
+  mutate(Periodo = case_when(CO_ANO==ano_atual-1 & CO_MES > mes_num | CO_ANO==ano_atual & CO_MES <= mes_num ~ paste(ano_atual,"/", ano_ant),
+                             CO_ANO == ano_atual-2 & CO_MES > mes_num | CO_ANO == ano_atual-1 & CO_MES <= mes_num ~ paste(ano_ant,"/", ano_ant2))) %>%
+  left_join(co_pais) %>%
+  group_by(CO_PAIS,NO_PAIS, Periodo) %>%
+  summarise_at(c("VL_FOB_EXP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              names_from = Periodo, 
+              values_from = c(`VL_FOB_EXP`)) %>%
+  ungroup() %>%
+  mutate(País=NO_PAIS,
+         `Exportações 12 meses`=round(`2024 / 2023`/1000000,2),
+         `Participação 12 meses`=round(`2024 / 2023`/sum(`2024 / 2023`,na.rm=T),4),
+         `Variação 12 meses`=round((`2024 / 2023`-`2023 / 2022`)/`2023 / 2022`,4)
+  ) %>%
+  select(País:ncol(.)) 
+
+```
+
+```{r}
+
+tb7_new2 <- arrange(tb7, desc(`Exportações 12 meses`))
+
+tb7_new2$`Participação 12 meses` = tb7_new2$`Participação 12 meses`*100
+tb7_new2$`Participação 12 meses` = paste0(tb7_new2$`Participação 12 meses`, '%')
+#view(tb7_new)
+
+
+tb7_new2$`Variação 12 meses` = tb7_new2$`Variação 12 meses`*100
+tb7_new2$`Variação 12 meses` = paste0(tb7_new2$`Variação 12 meses`, '%')
+
+tb7_new2[1:11, ] %>% 
+  flextable() %>% 
+  add_header_lines("Tabela 7 - Destinos das Exportações de Campinas (valores em milhões de USD/FOB, acumulado 12 meses).") %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Ministério de Indústria, Comércio, Serviços e Inovação.")
+  
+```
+
+Houve (...)
+
+A Tabela 8 traz os dados para as 10 principais origens das importações de Campinas, em 12 meses, bem como a variação das importações por origem em relação aos 12 meses anteriores.
+
+```{r}
+tb8<- sp_trade %>%
+  filter(CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num |
+           CO_ANO==ano_atual-2 & CO_MES > mes_num | 
+           CO_ANO==ano_atual-1 & CO_MES <= mes_num,
+         Campinas == 1)%>%
+  mutate(Periodo = case_when(CO_ANO==ano_atual-1 & CO_MES > mes_num | CO_ANO==ano_atual & CO_MES <= mes_num ~ paste(ano_atual,"/", ano_ant),
+                             CO_ANO == ano_atual-2 & CO_MES > mes_num | CO_ANO == ano_atual-1 & CO_MES <= mes_num ~ paste(ano_ant,"/", ano_ant2))) %>%
+  left_join(co_pais) %>%
+  group_by(CO_PAIS,NO_PAIS, Periodo) %>%
+  summarise_at(c("VL_FOB_IMP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              names_from = Periodo, 
+              values_from = c(`VL_FOB_IMP`)) %>%
+  ungroup() %>%
+  mutate(País=NO_PAIS,
+         `Importações 12 meses`= round(`2024 / 2023`/1000000,2),
+         `Participação 12 meses`=round(`2024 / 2023`/sum(`2024 / 2023`,na.rm=T),4),
+         `Variação 12 meses`=round((`2024 / 2023`-`2023 / 2022`)/`2023 / 2022`,4)
+  ) %>%
+  select(País:ncol(.))
+
+```
+
+```{r}
+
+tb8_new2 <- arrange(tb8, desc(`Importações 12 meses`))
+
+tb8_new2$`Participação 12 meses` = tb8_new2$`Participação 12 meses`*100
+tb8_new2$`Participação 12 meses` = paste0(tb8_new2$`Participação 12 meses`, '%')
+
+tb8_new2$`Variação 12 meses` = tb8_new2$`Variação 12 meses`*100
+tb8_new2$`Variação 12 meses` = paste0(tb8_new2$`Variação 12 meses`, '%')
+
+tb8_new2[1:10,] %>% 
+  flextable() %>% 
+  add_header_lines("Tabela 8 - Origens das Importações de Campinas (valores em milhões de USD/FOB, acumulado 12 meses).") %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+Destaca-se (...).
+
+```{r}
+tb11<-sp_trade %>%
+  filter(CO_ANO>=ano_atual-1,CO_MES==mes_num, Campinas==1) %>%
+  left_join(pci_db) %>%
+  group_by(SH4,SH4_N, CO_ANO) %>%
+  summarise_at(c("VL_FOB_IMP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              names_from = CO_ANO, 
+              values_from = c(`VL_FOB_IMP`)) %>%
+  ungroup() %>%
+  mutate(
+    `Valor Imp. 24`=round(`2024`/1000000,2),
+    `Valor Imp. 23`=round(`2023`/1000000,2),
+    `% Var`=round((`2024`-`2023`)/`2023`,4)) %>%
+  select(-`2024`,-`2023`) %>% 
+  arrange(`Valor Imp. 24`)
+tb10<-sp_trade %>%
+  filter(CO_ANO>=ano_atual-1,CO_MES==mes_num, Campinas==1) %>%
+  left_join(pci_db) %>%
+  group_by(SH4,SH4_N, CO_ANO) %>%
+  summarise_at(c("VL_FOB_EXP"),sum,na.rm=TRUE) %>%
+  pivot_wider(., 
+              names_from = CO_ANO, 
+              values_from = c(`VL_FOB_EXP`)) %>%
+  ungroup() %>%
+  mutate(
+    `Valor Exp. 24`=round(`2024`/1000000,2),
+    `Valor Exp. 23`=round(`2023`/1000000,2),
+    `% Var`=round((`2024`-`2023`)/`2023`,4)) %>%
+  select(-`2024`,-`2023`)
+
+
+```
+
+A Tabela 9 traz os dados para os três principais produtos importados das 10 principais origens das importações de Campinas, em 12 meses, bem como a variação das importações por origem em relação aos 12 meses anteriores.
+
+```{r}
+ncm_pt <- read.csv2(url("https://github.com/malvejl/Projects-PUCC/raw/main/NCMPT.csv"), encoding = "latin1")
+ncm_pt <- ncm_pt %>% 
+  mutate(SH4 = as.factor(SH4))
+
+tb12 <- sp_imp %>% 
+  filter(CO_MUN == 3409502, CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num) %>% 
+  select(-SG_UF_MUN, -CO_MUN, -KG_LIQUIDO) %>% 
+  left_join(co_pais) %>% 
+  filter(CO_PAIS == 249 | CO_PAIS == 160 | CO_PAIS == 858 | CO_PAIS == 676 | CO_PAIS == 190 | 
+           CO_PAIS == 23 | CO_PAIS == 399 | CO_PAIS == 493 | CO_PAIS == 161 | CO_PAIS == 361) %>% 
+  group_by(CO_PAIS, SH4, NO_PAIS) %>% 
+  summarise(VL_FOB_IMP = sum(VL_FOB_IMP)) %>% 
+  ungroup() %>% 
+  group_by(CO_PAIS, NO_PAIS) %>% 
+  arrange(desc(VL_FOB_IMP), .by_group = TRUE) %>% 
+  slice_max(VL_FOB_IMP, n = 3) %>% 
+  ungroup() %>% 
+  select(-CO_PAIS) %>% 
+  left_join(ncm_pt) %>%
+  mutate(VL_FOB_IMP = round(VL_FOB_IMP/1000000, digits = 2)) %>% 
+  rename(País = NO_PAIS, `Importações por produto 12 meses` = VL_FOB_IMP) %>% 
+  left_join(tb8_new2) %>% 
+  select(-`Participação 12 meses`, - `Variação 12 meses`) %>% 
+  mutate(`Participação produto/país 12 meses %` = round((`Importações por produto 12 meses`/ `Importações 12 meses`)*100, 2)) %>% 
+  rename(NCM = SH4, Produto = NCM_curto) %>% 
+  select(NCM, Produto, everything()) %>% 
+  arrange(desc(`Importações 12 meses`), .by_group = TRUE)
+
+
+tb12 %>% 
+  flextable() %>% 
+  add_header_lines("Tabela 9 - Principais Importações de Campinas por País (valores em milhões de USD/FOB, acumulado 12 meses).") %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+A Tabela 10 traz os dados para os três principais produtos exportados dos 10 principais destinos das exportações de Campinas, em 12 meses, bem como a variação das importações por origem em relação aos 12 meses anteriores.
+
+```{r}
+tb13 <- sp_exp %>% 
+  filter(CO_MUN == 3409502, CO_ANO==ano_atual-1 & CO_MES > mes_num | 
+           CO_ANO==ano_atual & CO_MES <= mes_num) %>% 
+  select(-SG_UF_MUN, -CO_MUN, -KG_LIQUIDO) %>% 
+  left_join(co_pais) %>% 
+  filter(CO_PAIS == 249 | CO_PAIS == 63 | CO_PAIS == 23 | CO_PAIS == 493 | CO_PAIS == 586 |
+           CO_PAIS == 160 | CO_PAIS == 607 | CO_PAIS == 791 | CO_PAIS == 169 | CO_PAIS == 275) %>% 
+  group_by(CO_PAIS, SH4, NO_PAIS) %>% 
+  summarise(VL_FOB_EXP = sum(VL_FOB_EXP)) %>% 
+  ungroup() %>% 
+  group_by(CO_PAIS, NO_PAIS) %>% 
+  arrange(desc(VL_FOB_EXP), .by_group = TRUE) %>% 
+  slice_max(VL_FOB_EXP, n = 3) %>% 
+  ungroup() %>% 
+  select(-CO_PAIS) %>% 
+  left_join(ncm_pt) %>%
+  mutate(VL_FOB_EXP = round(VL_FOB_EXP/1000000, digits = 2)) %>% 
+  rename(País = NO_PAIS, `Exportações por produto 12 meses` = VL_FOB_EXP) %>% 
+  left_join(tb7_new2) %>% 
+  select(-`Participação 12 meses`, - `Variação 12 meses`) %>% 
+  mutate(`Participação produto/país 12 meses %` = round((`Exportações por produto 12 meses`/ `Exportações 12 meses`)*100, 2)) %>% 
+  rename(NCM = SH4, Produto = NCM_curto) %>% 
+  select(NCM, Produto, everything()) %>% 
+  arrange(desc(`Exportações 12 meses`), .by_group = TRUE)
+
+tb13 %>% 
+  flextable() %>% 
+  add_header_lines("Tabela 10 - Principais Exportações de Campinas por País (valores em milhões de USD/FOB, acumulado 12 meses).") %>% 
+  add_footer_lines("Fonte: Elaboração Própria com base nos dados do Ministério de Indústria, Comércio, Serviços e Inovação.")
+```
+
+# Previsões e Perspectivas para 2024
+
+As análises mais recentes do Observatório PUC-Campinas apontam para um ano de (...) nas importações (...%) e (...) das exportações (...%). Em relação as últimas previsões, nota-se que os dados de exportação do mês 04/2024 indicaram uma (...) na taxa de variação das exportações. A redução das importações pode estar relacionada a queda no valor importado tanto de bens acabados como bens intermediários. Reduções expressivas na importação de bens intermediários indicam, em geral, queda do ritmo da produção industrial.
